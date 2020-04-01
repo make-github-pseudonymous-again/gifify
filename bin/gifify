@@ -1,0 +1,287 @@
+#!/usr/bin/env sh
+
+# Inspired by
+# https://github.com/vvo/gifify
+# and
+# https://github.com/tj/node-gify
+# and
+# https://github.com/jclem/gifify
+
+function abort {
+  >&2 echo "abort: $1"
+  exit 1
+}
+
+### PARSING BEGIN ###
+
+# A POSIX variable
+OPTIND=1         # Reset in case getopts has been used previously in the shell.
+
+# DEFAULTS
+
+verbose=false      # -v
+execute=true       # -p Only parse arguments and print commands.
+
+input=             # -i <input> or gifify [OPTIONS] <input>, defaults to stdin.
+output=            # -o <output>, defaults to stdout.
+fps=10             # -f <fps> ffmpeg -r option.
+resize=            # -r <w:h> ffmpeg scale filter, use -1 when specifying only width or height. `350:100`, `400:-1`, `-1:200`
+
+colors=80          # -c <colors> gifsicle colors option.
+lossy=80           # -z <lossy> gifsicle lossy option.
+delay=             # -d <delay> gifsicle delay option, defaults to automatic := 100 / fps / speed.
+once=false         # -l gifsicle --no-loopcount flag.
+
+subtitles=         # -s <file> ffmpeg subtitle file.
+text=              # -t <text> convert annotate option.
+
+# for Time duration specification see man ffmpeg-utils
+from=              # -F <position> ffmpeg -ss option
+to=                # -T <position> ffmpeg -to option
+duration=          # -D <duration> ffmpeg -t option
+
+crop=              # -C <w:h:x:y> ffmpeg crop filter, default is none.
+reverse=false      # -R ffmpeg reverse filter, default is none.
+speed=1            # -S <speed> used to compute delay when none is given.
+vsync=false        # -V ffmpeg -vsync option, default is none.
+
+function show_help ( ) {
+  >&2 echo '! No help for the moment :(' ;
+  >&2 echo ' > Here is the code of the script. The file is located at '"${BASH_SOURCE}".
+  if command -v bat > /dev/null ; then
+    bat "${BASH_SOURCE}"
+  elif command -v less > /dev/null ; then
+    less "${BASH_SOURCE}"
+  else
+    cat "${BASH_SOURCE}"
+  fi
+}
+
+while getopts "h?vpi:o:c:z:f:d:r:s:t:lF:T:D:C:RS:V" opt; do
+    case "$opt" in
+    h|\?)
+      show_help
+      exit 0
+      ;;
+    v) verbose=true ;;
+    p)
+      execute=false
+      verbose=true
+      ;;
+    i) input="$OPTARG" ;;
+    o) output="$OPTARG" ;;
+    c) colors="$OPTARG" ;;
+    z) lossy="$OPTARG" ;;
+    f) fps="$OPTARG" ;;
+    d) delay="$OPTARG" ;;
+    r) resize="$OPTARG" ;;
+    s) subtitles="$OPTARG" ;;
+    t) text="$OPTARG" ;;
+    l) once=true ;;
+    F) from="$OPTARG" ;;
+    T) to="$OPTARG" ;;
+    D) duration="$OPTARG" ;;
+    C) crop="$OPTARG" ;;
+    R) reverse=true ;;
+    S) speed="$OPTARG" ;;
+    V) vsync=true ;;
+    esac
+done
+
+shift $((OPTIND-1))
+
+[ "$1" = "--" ] && shift
+
+### PARSING END ###
+
+function main {
+  checkRequirements
+  interpret "$@"
+  encode
+}
+
+# This will check both if the required applications are installed, and if they
+# are installed with the correct dependencies. For example, to make subtitles
+# work, ffmpeg needs to be compiled with `enable-libass`.
+function checkRequirements {
+  checkRequirement ffmpeg -version libass fontconfig
+  checkRequirement gifsicle -h lossy
+  checkRequirement convert --version fontconfig
+}
+
+function checkRequirement {
+  cmd="$1" && shift
+  about="$1" && shift
+  command -v "$cmd" > /dev/null || notInstalled "$cmd"
+  for option in "$@" ; do
+    "$cmd" "$about" | grep -iq "$option" || missingDependency "$cmd" "$option"
+  done
+}
+
+function notInstalled {
+  abort "Could not find $1. Is it installed?"
+}
+
+function missingDependency  {
+  abort "$1 needs option $2"
+}
+
+function interpret {
+
+  # we can only deal with one gif at a time
+  if [ "$#" -gt 1 ] ; then
+    abort 'Multiple inputs specified.'
+  fi
+
+  if [ "$#" -eq 1 ] ; then
+    input="$1" && shift
+  fi
+
+  # show help if user piped from terminal
+  if [ -z "$input" ] ; then
+    if [ -t 0 ] ; then
+      abort 'Input is tty.'
+    fi
+    input="/dev/stdin"
+  fi
+
+  # show help if user piped to terminal
+  if [ -z "$output" ] ; then
+    if [ -t 1 ] ; then
+      abort 'Output is tty.'
+    fi
+    output="/dev/stdout"
+  fi
+
+  if [ -z "$delay" ] ; then
+    tmp1="$(( "$fps" * "$speed" ))"
+    tmp2="$(( 99 + "$tmp1" ))"
+    delay="$(( "$tmp2"  / "$tmp1" ))"
+    delay="$(( 100  / "$tmp1" ))"
+  fi
+
+}
+
+function encode {
+
+  >&2 echo "Generating GIF, please wait..."
+
+  arguments="$(mktemp --tmpdir --directory "${USER}-gifify.XXXXXXXX")"
+  computeFFmpegArgs > "$arguments/ffmpeg"
+  computeConvertArgs > "$arguments/convert"
+  computeGifsicleArgs > "$arguments/gifsicle"
+
+  if "$verbose" ; then
+    xargs -0 -t -a "$arguments/ffmpeg" true ffmpeg
+    xargs -0 -t -a "$arguments/convert" true convert
+    xargs -0 -t -a "$arguments/gifsicle" true gifsicle
+  fi
+
+  if "$execute" ; then
+    xargs -0 -a "$arguments/ffmpeg" ffmpeg |
+    xargs -0 -a "$arguments/convert" convert |
+    xargs -0 -a "$arguments/gifsicle" gifsicle
+  fi
+
+  rm -rf "$arguments"
+
+}
+
+function computeFFmpegArgs {
+  # FFmpeg options
+  # https://www.ffmpeg.org/ffmpeg.html#Options
+  printf '%s\0%s\0' -loglevel panic
+
+  # fast seek
+  # see http://superuser.com/a/704118/35651
+  # and https://trac.ffmpeg.org/wiki/Seeking
+  if [ -n "$from" ] ; then
+    printf '%s\0%s\0' -ss "$from"
+  fi
+
+  printf '%s\0%s\0' -i "$input"
+
+  if [ -n "$duration" ] ; then
+    printf '%s\0%s\0' -t "$duration"
+  fi
+
+  if [ -n "$to" ] ; then
+    printf '%s\0%s\0' -to "$to"
+  fi
+
+  printf '%s\0%s\0' -r "$fps"
+
+  if [ -n "$resize" ] || [ -n "$subtitles" ] || "$reverse" ; then
+    printf '%s\0' -vf
+    tmp=false
+    if [ -n "$crop" ] ; then
+      if "$tmp" ; then printf ',' ; fi ; tmp=true
+      printf "crop=%s" "$crop"
+    fi
+    if [ -n "$resize" ] ; then
+      if "$tmp" ; then printf ',' ; fi ; tmp=true
+      printf "scale=%s" "$resize"
+    fi
+    if [ -n "$subtitles" ] ; then
+      if "$tmp" ; then printf ',' ; fi ; tmp=true
+      printf "subtitles=%s" "$subtitles"
+    fi
+    if "$reverse" ; then
+      if "$tmp" ; then printf ',' ; fi ; tmp=true
+      printf "reverse"
+    fi
+    printf '\0'
+  fi
+
+  # encoding filter and codec
+  printf '%s\0%s\0' -f image2pipe
+  printf '%s\0%s\0' -vcodec ppm
+
+  # force video sync so that even if nothing moves in the video, we get a constant frame rate
+  # seems buggy, not what I want, still, some videos are failing to encode
+  if "$vsync" ; then
+    printf '%s\0%s\0' -vsync 1
+  fi
+
+  # write on stdout
+  printf '%s\0' pipe:1
+
+}
+
+function computeConvertArgs {
+  # Convert options
+  # http://www.imagemagick.rg/script/convert.php#options
+  printf '%s\0' -
+  printf '%s\0' +dither
+  printf '%s\0%s\0' -layers Optimize
+
+  if [ -n "$text" ] ; then
+    printf '%s\0%s\0'     -gravity South
+    printf '%s\0%s\0'     -fill white
+    printf '%s\0%s\0'     -stroke black
+    printf '%s\0%s\0'     -strokewidth 2
+    printf '%s\0%s\0'     -pointsize 40
+    printf '%s\0%s\0%s\0' -annotate +20+20 "$text"
+  fi
+
+  printf '%s\0' gif:-
+}
+
+function computeGifsicleArgs {
+  # Gifsicle options
+  # http://www.lcdf.org/gifsicle/man.html
+
+  printf '%s\0%s\0' -o "$output"
+
+  printf '%s\0'     -O3
+  printf '%s=%s\0'  --lossy "$lossy"
+  printf '%s=%s\0'  --colors "$colors"
+  printf '%s\0%s\0' --delay "$delay"
+  printf '%s\0'     --no-warnings
+
+  if "$once" ; then
+    printf '%s\0'   --no-loopcount
+  fi
+}
+
+main "$@"
