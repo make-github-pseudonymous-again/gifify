@@ -290,7 +290,7 @@ function computeFFmpegArgs {
 
   printf '%s\0%s\0' -r "$fps"
 
-  if [ -n "$resize" ] || [ -n "$subtitles" ] || "$reverse" ; then
+  if [ -n "$resize" ] || [ -n "$subtitles" ] || ( "$reverse" && ! "$use_gifski" ) ; then
     printf '%s\0' -vf
     tmp=false
     if [ -n "$crop" ] ; then
@@ -305,7 +305,7 @@ function computeFFmpegArgs {
       if "$tmp" ; then printf ',' ; fi ; tmp=true
       printf "subtitles=%s" "$subtitles"
     fi
-    if "$reverse" ; then
+    if ( "$reverse" && ! "$use_gifski" ) ; then
       if "$tmp" ; then printf ',' ; fi ; tmp=true
       printf "reverse"
     fi
@@ -383,7 +383,14 @@ function computeGifskiArgs {
     printf '%s\0'     --fast
   fi
 
-  find "$1/frames" -type f -print0
+  printf '%s\0'       --nosort
+
+  ordering=
+  if "$reverse" ; then
+    ordering='-r'
+  fi
+
+  find "$1/frames" -type f -print0 | sort -z -n $ordering
 }
 
 main "$@"
