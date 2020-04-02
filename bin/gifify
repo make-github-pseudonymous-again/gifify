@@ -208,7 +208,7 @@ function encode {
     encode_default "$tmpdir"
   fi
 
-  #rm -rf "$tmpdir"
+  rm -rf "$tmpdir"
 
 }
 
