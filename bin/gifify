@@ -12,6 +12,18 @@ function abort {
   exit 1
 }
 
+function show_help ( ) {
+  >&2 echo '! No help for the moment :(' ;
+  >&2 echo ' > Here is the code of the script. The file is located at '"${BASH_SOURCE}".
+  if command -v bat > /dev/null ; then
+    bat "${BASH_SOURCE}"
+  elif command -v less > /dev/null ; then
+    less "${BASH_SOURCE}"
+  else
+    cat "${BASH_SOURCE}"
+  fi
+}
+
 ### PARSING BEGIN ###
 
 # A POSIX variable
@@ -45,19 +57,11 @@ reverse=false      # -R ffmpeg reverse filter, default is none.
 speed=1            # -S <speed> used to compute delay when none is given.
 vsync=false        # -V ffmpeg -vsync option, default is none.
 
-function show_help ( ) {
-  >&2 echo '! No help for the moment :(' ;
-  >&2 echo ' > Here is the code of the script. The file is located at '"${BASH_SOURCE}".
-  if command -v bat > /dev/null ; then
-    bat "${BASH_SOURCE}"
-  elif command -v less > /dev/null ; then
-    less "${BASH_SOURCE}"
-  else
-    cat "${BASH_SOURCE}"
-  fi
-}
+gifski=auto        # -g {auto,never,always} when to use gifski, defaults to automatic depending on other arguments.
+fast=false         # -b gifski --fast flag (`b` like butcher).
+quality=           # -q <1-100> gifski --quality option.
 
-while getopts "h?vpi:o:c:z:f:d:r:s:t:lF:T:D:C:RS:V" opt; do
+while getopts "h?vpi:o:c:z:f:d:r:s:t:lF:T:D:C:RS:Vg:bq:" opt; do
     case "$opt" in
     h|\?)
       show_help
@@ -70,8 +74,18 @@ while getopts "h?vpi:o:c:z:f:d:r:s:t:lF:T:D:C:RS:V" opt; do
       ;;
     i) input="$OPTARG" ;;
     o) output="$OPTARG" ;;
-    c) colors="$OPTARG" ;;
-    z) lossy="$OPTARG" ;;
+    c)
+      colors="$OPTARG"
+      if [ "$gifski" != "always" ] ; then
+        gifski=never
+      fi
+      ;;
+    z)
+      lossy="$OPTARG"
+      if [ "$gifski" != "always" ] ; then
+        gifski=never
+      fi
+      ;;
     f) fps="$OPTARG" ;;
     d) delay="$OPTARG" ;;
     r) resize="$OPTARG" ;;
@@ -83,8 +97,16 @@ while getopts "h?vpi:o:c:z:f:d:r:s:t:lF:T:D:C:RS:V" opt; do
     D) duration="$OPTARG" ;;
     C) crop="$OPTARG" ;;
     R) reverse=true ;;
-    S) speed="$OPTARG" ;;
+    S)
+      speed="$OPTARG"
+      if [ "$gifski" != "always" ] ; then
+        gifski=never
+      fi
+      ;;
     V) vsync=true ;;
+    g) gifski="$OPTARG" ;;
+    b) fast=true ;;
+    q) quality="$OPTARG" ;;
     esac
 done
 
@@ -93,6 +115,8 @@ shift $((OPTIND-1))
 [ "$1" = "--" ] && shift
 
 ### PARSING END ###
+
+use_gifski=true
 
 function main {
   checkRequirements
@@ -107,6 +131,7 @@ function checkRequirements {
   checkRequirement ffmpeg -version libass fontconfig
   checkRequirement gifsicle -h lossy
   checkRequirement convert --version fontconfig
+  checkRequirement gifski -h
 }
 
 function checkRequirement {
@@ -137,7 +162,7 @@ function interpret {
     input="$1" && shift
   fi
 
-  # show help if user piped from terminal
+  # abort if user piped from terminal
   if [ -z "$input" ] ; then
     if [ -t 0 ] ; then
       abort 'Input is tty.'
@@ -145,12 +170,20 @@ function interpret {
     input="/dev/stdin"
   fi
 
-  # show help if user piped to terminal
+  # abort if user piped to terminal
   if [ -z "$output" ] ; then
     if [ -t 1 ] ; then
       abort 'Output is tty.'
     fi
     output="/dev/stdout"
+  fi
+
+  if [ "$gifski" = "never" ] ; then
+    use_gifski=false
+  elif [ "$gifski" = "auto" ] ; then
+    if [ -n "$text" ] || [ -n "$delay" ] ; then
+      use_gifski=false
+    fi
   fi
 
   if [ -z "$delay" ] ; then
@@ -166,24 +199,70 @@ function encode {
 
   >&2 echo "Generating GIF, please wait..."
 
-  arguments="$(mktemp --tmpdir --directory "${USER}-gifify.XXXXXXXX")"
-  computeFFmpegArgs > "$arguments/ffmpeg"
-  computeConvertArgs > "$arguments/convert"
-  computeGifsicleArgs > "$arguments/gifsicle"
+  tmpdir="$(mktemp --tmpdir --directory "${USER}-gifify.XXXXXXXX")"
+  mkdir -p "$tmpdir/arguments"
+
+  if "$use_gifski" ; then
+    encode_gifski "$tmpdir"
+  else
+    encode_default "$tmpdir"
+  fi
+
+  #rm -rf "$tmpdir"
+
+}
+
+function encode_gifski {
 
   if "$verbose" ; then
-    xargs -0 -t -a "$arguments/ffmpeg" true ffmpeg
-    xargs -0 -t -a "$arguments/convert" true convert
-    xargs -0 -t -a "$arguments/gifsicle" true gifsicle
+    >&2 echo "Encoding using gifski"
+  fi
+
+  mkdir -p "$1/frames"
+
+  computeFFmpegArgs "$1" > "$1/arguments/ffmpeg"
+
+  if "$verbose" ; then
+    xargs -0 -t -a "$1/arguments/ffmpeg" true ffmpeg
   fi
 
   if "$execute" ; then
-    xargs -0 -a "$arguments/ffmpeg" ffmpeg |
-    xargs -0 -a "$arguments/convert" convert |
-    xargs -0 -a "$arguments/gifsicle" gifsicle
+    xargs -0 -a "$1/arguments/ffmpeg" ffmpeg
   fi
 
-  rm -rf "$arguments"
+  computeGifskiArgs "$1" > "$1/arguments/gifski"
+
+  if "$verbose" ; then
+    xargs -0 -t -a "$1/arguments/gifski" true gifski
+  fi
+
+  if "$execute" ; then
+    xargs -0 -a "$1/arguments/gifski" gifski
+  fi
+
+}
+
+function encode_default {
+
+  if "$verbose" ; then
+    >&2 echo "Encoding using convert and gifsicle"
+  fi
+
+  computeFFmpegArgs "$1" > "$1/arguments/ffmpeg"
+  computeConvertArgs "$1" > "$1/arguments/convert"
+  computeGifsicleArgs "$1" > "$1/arguments/gifsicle"
+
+  if "$verbose" ; then
+    xargs -0 -t -a "$1/arguments/ffmpeg" true ffmpeg
+    xargs -0 -t -a "$1/arguments/convert" true convert
+    xargs -0 -t -a "$1/arguments/gifsicle" true gifsicle
+  fi
+
+  if "$execute" ; then
+    xargs -0 -a "$1/arguments/ffmpeg" ffmpeg |
+    xargs -0 -a "$1/arguments/convert" convert |
+    xargs -0 -a "$1/arguments/gifsicle" gifsicle
+  fi
 
 }
 
@@ -233,18 +312,21 @@ function computeFFmpegArgs {
     printf '\0'
   fi
 
-  # encoding filter and codec
-  printf '%s\0%s\0' -f image2pipe
-  printf '%s\0%s\0' -vcodec ppm
-
   # force video sync so that even if nothing moves in the video, we get a constant frame rate
   # seems buggy, not what I want, still, some videos are failing to encode
   if "$vsync" ; then
     printf '%s\0%s\0' -vsync 1
   fi
 
-  # write on stdout
-  printf '%s\0' pipe:1
+  if "$use_gifski" ; then
+    printf '%s\0' "$1/frames/%09d.png"
+  else
+    # encoding filter and codec
+    printf '%s\0%s\0' -f image2pipe
+    printf '%s\0%s\0' -vcodec ppm
+    # write on stdout
+    printf '%s\0' pipe:1
+  fi
 
 }
 
@@ -282,6 +364,26 @@ function computeGifsicleArgs {
   if "$once" ; then
     printf '%s\0'   --no-loopcount
   fi
+}
+
+function computeGifskiArgs {
+
+  printf '%s\0%s\0'   --output "$output"
+  printf '%s\0%s\0'   --fps "$fps"
+  if [ -n "$quality" ] ; then
+    printf '%s\0%s\0' --quality "$quality"
+  fi
+  if "$once" ; then
+    printf '%s\0'     --once
+  fi
+  if ! "$verbose" ; then
+    printf '%s\0'     --quiet
+  fi
+  if "$fast" ; then
+    printf '%s\0'     --fast
+  fi
+
+  find "$1/frames" -type f -print0
 }
 
 main "$@"

@@ -10,6 +10,7 @@
   - ffmpeg
   - gifsicle
   - convert
+  - gifski
 
 ## Install
 
