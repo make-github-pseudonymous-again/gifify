@@ -11,6 +11,9 @@
   - gifsicle
   - convert
   - gifski
+  - bc
+  - sed
+  - grep
 
 ## Install
 
