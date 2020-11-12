@@ -7,30 +7,30 @@
 # and
 # https://github.com/jclem/gifify
 
-function log {
+log() {
   >&2 echo "$@"
 }
 
-function debug {
+debug() {
   if "$verbose" ; then
     log "$@"
   fi
 }
 
-function abort {
+abort() {
   log "abort: $1"
   exit 1
 }
 
-function show_help {
+show_help() {
   log '! No help for the moment :(' ;
-  log ' > Here is the code of the script. The file is located at '"${BASH_SOURCE}".
+  log ' > Here is the code of the script. The file is located at '"$0".
   if command -v bat > /dev/null ; then
-    bat "${BASH_SOURCE}"
+    bat "$0"
   elif command -v less > /dev/null ; then
-    less "${BASH_SOURCE}"
+    less "$0"
   else
-    cat "${BASH_SOURCE}"
+    cat "$0"
   fi
 }
 
@@ -124,7 +124,7 @@ shift $((OPTIND-1))
 use_gifski=true
 framerate=
 
-function main {
+main() {
   checkRequirements
   interpret "$@"
   encode
@@ -133,14 +133,14 @@ function main {
 # This will check both if the required applications are installed, and if they
 # are installed with the correct dependencies. For example, to make subtitles
 # work, ffmpeg needs to be compiled with `enable-libass`.
-function checkRequirements {
+checkRequirements() {
   checkRequirement ffmpeg -version libass fontconfig
   checkRequirement gifsicle -h lossy
   checkRequirement convert --version fontconfig
   checkRequirement gifski -h
 }
 
-function checkRequirement {
+checkRequirement() {
   cmd="$1" && shift
   about="$1" && shift
   command -v "$cmd" > /dev/null || notInstalled "$cmd"
@@ -149,15 +149,15 @@ function checkRequirement {
   done
 }
 
-function notInstalled {
+notInstalled() {
   abort "Could not find $1. Is it installed?"
 }
 
-function missingDependency  {
+missingDependency()  {
   abort "$1 needs option $2"
 }
 
-function interpret {
+interpret() {
 
   # we can only deal with one gif at a time
   if [ "$#" -gt 1 ] ; then
@@ -198,7 +198,7 @@ function interpret {
     fi
     realfps="$(calc 3 100 / "$delay")"
     if [ "$realfps" != "$fps" ] ; then
-      log "Warning: requesting fps=$fps but can only handle integer delay with gifsicle (floor(100 / "$fps") = "$delay"). Will use fps=$realfps to honor speed=$speed."
+      log "Warning: requesting fps=${fps} but can only handle integer delay with gifsicle (floor(100 / ${fps}) = ${delay}). Will use fps=${realfps} to honor speed=${speed}."
       fps="$realfps"
     fi
   fi
@@ -207,7 +207,7 @@ function interpret {
 
 }
 
-function encode {
+encode() {
 
   log "Generating GIF, please wait..."
 
@@ -224,7 +224,7 @@ function encode {
 
 }
 
-function encode_gifski {
+encode_gifski() {
 
   debug "Encoding using gifski"
 
@@ -252,7 +252,7 @@ function encode_gifski {
 
 }
 
-function encode_default {
+encode_default() {
 
   debug "Encoding using convert and gifsicle"
 
@@ -274,7 +274,7 @@ function encode_default {
 
 }
 
-function computeFFmpegArgs {
+computeFFmpegArgs() {
   # FFmpeg options
   # https://www.ffmpeg.org/ffmpeg.html#Options
   printf '%s\0%s\0' -loglevel panic
@@ -338,7 +338,7 @@ function computeFFmpegArgs {
 
 }
 
-function computeConvertArgs {
+computeConvertArgs() {
   # Convert options
   # http://www.imagemagick.rg/script/convert.php#options
   printf '%s\0' -
@@ -357,7 +357,7 @@ function computeConvertArgs {
   printf '%s\0' gif:-
 }
 
-function computeGifsicleArgs {
+computeGifsicleArgs() {
   # Gifsicle options
   # http://www.lcdf.org/gifsicle/man.html
 
@@ -374,7 +374,7 @@ function computeGifsicleArgs {
   fi
 }
 
-function computeGifskiArgs {
+computeGifskiArgs() {
 
   printf '%s\0%s\0'   --output "$output"
   printf '%s\0%s\0'   --fps "$fps"         # supports fractional fps
@@ -401,17 +401,17 @@ function computeGifskiArgs {
   find "$1/frames" -type f -print0 | sort -z -n $ordering
 }
 
-function calc {
+calc() {
   scale="$1" && shift
-  result="$(printf -- "scale=$scale;($*)/1\n" | bc | tr -d '\\\n')"
-  if grep -q '[.]' <<< "$result" ; then
+  result="$(printf '%s\n' "scale=$scale;($*)/1" | bc | tr -d '\\\n')"
+  if printf '%s' "$result" | grep -q '[.]' ; then
       # improve the output for decimal numbers
-      printf -- "$result" |
+      printf '%s\n' "$result" |
       sed -e 's/^\./0./'        `# add "0" for cases like ".5"` \
           -e 's/^-\./-0./'      `# add "0" for cases like "-.5"`\
           -e 's/0*$//;s/\.$//'   # remove trailing zeros
   else
-      printf -- "$result"
+      printf '%s\n' "$result"
   fi
 }
 
